@@ -1,6 +1,7 @@
 use engine::composite::CompositeEvaluator;
 use engine::dice::Dice;
 use engine::evaluator::Evaluator;
+use engine::multiply::MultiPlyEvaluator;
 use engine::position::Position;
 use logic::bg_move::BgMove;
 use logic::wildbg_api::ScoreConfig;
@@ -12,6 +13,16 @@ fn main() {
 
     let evaluator = match CompositeEvaluator::try_default() {
         Ok(evaluator) => evaluator,
+        Err(err) => {
+            reply(
+                &mut stdout,
+                &format!("error missing_context evaluator_init_failed {err}"),
+            );
+            return;
+        }
+    };
+    let evaluator_2ply = match CompositeEvaluator::try_default() {
+        Ok(evaluator) => MultiPlyEvaluator { evaluator },
         Err(err) => {
             reply(
                 &mut stdout,
@@ -58,7 +69,7 @@ fn main() {
                 );
                 reply(
                     &mut stdout,
-                    "option name Ply type spin default 1 min 1 max 1",
+                    "option name Ply type spin default 1 min 1 max 2",
                 );
                 reply(&mut stdout, "ubgiok");
             }
@@ -80,13 +91,15 @@ fn main() {
             _ if cmd.starts_with("newsession ")
                 || cmd.starts_with("setscore ")
                 || cmd.starts_with("setcube ") => {}
-            _ if cmd.starts_with("go") => match handle_go(cmd, &context, &evaluator) {
-                Ok((info_line, bestmove_line)) => {
-                    reply(&mut stdout, &info_line);
-                    reply(&mut stdout, &bestmove_line);
+            _ if cmd.starts_with("go") => {
+                match handle_go(cmd, &context, &evaluator, &evaluator_2ply) {
+                    Ok((info_line, bestmove_line)) => {
+                        reply(&mut stdout, &info_line);
+                        reply(&mut stdout, &bestmove_line);
+                    }
+                    Err(err) => reply(&mut stdout, &err),
                 }
-                Err(err) => reply(&mut stdout, &err),
-            },
+            }
             _ => {
                 if let Some(id) = cmd.strip_prefix("position gnubgid ") {
                     match parse_position_id(id.trim()) {
@@ -113,6 +126,7 @@ struct Context {
     deterministic: bool,
     threads: usize,
     seed: u64,
+    ply: usize,
 }
 
 impl Default for Context {
@@ -124,6 +138,7 @@ impl Default for Context {
             deterministic: true,
             threads: 1,
             seed: 0,
+            ply: 1,
         }
     }
 }
@@ -169,8 +184,11 @@ fn handle_setoption(cmd: &str, context: &mut Context) -> Option<String> {
             _ => Some("error unsupported_feature variant".to_string()),
         },
         "Ply" => match value.trim().parse::<usize>() {
-            Ok(1) => None,
-            _ => Some("error unsupported_feature ply".to_string()),
+            Ok(ply) if (1..=2).contains(&ply) => {
+                context.ply = ply;
+                None
+            }
+            _ => Some("error bad_argument ply".to_string()),
         },
         _ => Some("error unsupported_feature setoption".to_string()),
     }
@@ -221,6 +239,7 @@ fn handle_go(
     cmd: &str,
     context: &Context,
     evaluator: &CompositeEvaluator,
+    evaluator_2ply: &MultiPlyEvaluator<CompositeEvaluator>,
 ) -> Result<(String, String), String> {
     if let Some(err) = validate_go(cmd) {
         return Err(err);
@@ -233,7 +252,11 @@ fn handle_go(
         .dice
         .ok_or_else(|| "error missing_context dice".to_string())?;
 
-    let best_position = evaluator.best_position(&position, &dice, context.score_config.value());
+    let best_position = if context.ply <= 1 {
+        evaluator.best_position(&position, &dice, context.score_config.value())
+    } else {
+        evaluator_2ply.best_position(&position, &dice, context.score_config.value())
+    };
     let best_move = BgMove::new(&position, &best_position.sides_switched(), &dice);
     let best_move_text = format_move(best_move);
 
