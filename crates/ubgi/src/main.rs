@@ -32,126 +32,77 @@ fn main() {
             continue;
         }
 
-        if cmd == "ubgi" {
-            reply(&mut stdout, "id name wildbg-ubgi 0.1");
-            reply(&mut stdout, "id author wildbg contributors");
-            reply(
-                &mut stdout,
-                "option name Threads type spin default 1 min 1 max 256",
-            );
-            reply(
-                &mut stdout,
-                "option name Seed type spin default 0 min 0 max 4294967295",
-            );
-            reply(
-                &mut stdout,
-                "option name Deterministic type check default true",
-            );
-            reply(
-                &mut stdout,
-                "option name EvalMode type combo default cubeless var cubeless var cubeful",
-            );
-            reply(
-                &mut stdout,
-                "option name Variant type combo default backgammon var backgammon",
-            );
-            reply(&mut stdout, "ubgiok");
-            continue;
-        }
-
-        if cmd == "isready" {
-            reply(&mut stdout, "readyok");
-            continue;
-        }
-
-        if cmd == "newgame" {
-            context.position = None;
-            context.dice = None;
-            continue;
-        }
-
-        if let Some(err) = handle_setoption(cmd, &mut context) {
-            reply(&mut stdout, &err);
-            continue;
-        }
-        if cmd.starts_with("setoption ") {
-            continue;
-        }
-
-        if let Some(id) = cmd.strip_prefix("position gnubgid ") {
-            match parse_position_id(id.trim()) {
-                Some(position) => context.position = Some(position),
-                None => reply(&mut stdout, "error bad_argument invalid_position"),
+        match cmd {
+            "ubgi" => {
+                reply(&mut stdout, "id name wildbg-ubgi 0.1");
+                reply(&mut stdout, "id author wildbg contributors");
+                reply(
+                    &mut stdout,
+                    "option name Threads type spin default 1 min 1 max 256",
+                );
+                reply(
+                    &mut stdout,
+                    "option name Seed type spin default 0 min 0 max 4294967295",
+                );
+                reply(
+                    &mut stdout,
+                    "option name Deterministic type check default true",
+                );
+                reply(
+                    &mut stdout,
+                    "option name EvalMode type combo default cubeless var cubeless var cubeful",
+                );
+                reply(
+                    &mut stdout,
+                    "option name Variant type combo default backgammon var backgammon",
+                );
+                reply(
+                    &mut stdout,
+                    "option name Ply type spin default 1 min 1 max 1",
+                );
+                reply(&mut stdout, "ubgiok");
             }
-            continue;
-        }
-
-        if cmd == "position xgid" || cmd.starts_with("position xgid ") {
-            reply(&mut stdout, "error unsupported_feature position_xgid");
-            continue;
-        }
-
-        if let Some(rest) = cmd.strip_prefix("dice ") {
-            match parse_dice(rest) {
-                Some(dice) => context.dice = Some(dice),
-                None => reply(&mut stdout, "error bad_argument dice"),
+            "isready" => reply(&mut stdout, "readyok"),
+            "newgame" => {
+                context.position = None;
+                context.dice = None;
             }
-            continue;
-        }
-
-        if cmd == "setturn p0" || cmd == "setturn p1" {
-            continue;
-        }
-
-        if cmd.starts_with("newsession ") {
-            continue;
-        }
-
-        if cmd.starts_with("setscore ") {
-            continue;
-        }
-
-        if cmd.starts_with("setcube ") {
-            continue;
-        }
-
-        if cmd.starts_with("go") {
-            if let Some(err) = validate_go(cmd) {
-                reply(&mut stdout, &err);
-                continue;
+            "setturn p0" | "setturn p1" | "stop" => {}
+            "quit" => break,
+            _ if cmd.starts_with("setoption ") => {
+                if let Some(err) = handle_setoption(cmd, &mut context) {
+                    reply(&mut stdout, &err);
+                }
             }
-
-            let Some(position) = context.position else {
-                reply(&mut stdout, "error missing_context position");
-                continue;
-            };
-            let Some(dice) = context.dice else {
-                reply(&mut stdout, "error missing_context dice");
-                continue;
-            };
-
-            let best_position =
-                evaluator.best_position(&position, &dice, context.score_config.value());
-            let best_move = BgMove::new(&position, &best_position.sides_switched(), &dice);
-            let best_move_text = format_move(best_move);
-
-            reply(
-                &mut stdout,
-                &format!("info role chequer pv {}", best_move_text),
-            );
-            reply(&mut stdout, &format!("bestmove {best_move_text}"));
-            continue;
+            _ if cmd == "position xgid" || cmd.starts_with("position xgid ") => {
+                reply(&mut stdout, "error unsupported_feature position_xgid");
+            }
+            _ if cmd.starts_with("newsession ")
+                || cmd.starts_with("setscore ")
+                || cmd.starts_with("setcube ") => {}
+            _ if cmd.starts_with("go") => match handle_go(cmd, &context, &evaluator) {
+                Ok((info_line, bestmove_line)) => {
+                    reply(&mut stdout, &info_line);
+                    reply(&mut stdout, &bestmove_line);
+                }
+                Err(err) => reply(&mut stdout, &err),
+            },
+            _ => {
+                if let Some(id) = cmd.strip_prefix("position gnubgid ") {
+                    match parse_position_id(id.trim()) {
+                        Some(position) => context.position = Some(position),
+                        None => reply(&mut stdout, "error bad_argument invalid_position"),
+                    }
+                } else if let Some(rest) = cmd.strip_prefix("dice ") {
+                    match parse_dice(rest) {
+                        Some(dice) => context.dice = Some(dice),
+                        None => reply(&mut stdout, "error bad_argument dice"),
+                    }
+                } else {
+                    reply(&mut stdout, "error unknown_command");
+                }
+            }
         }
-
-        if cmd == "stop" {
-            continue;
-        }
-
-        if cmd == "quit" {
-            break;
-        }
-
-        reply(&mut stdout, "error unknown_command");
     }
 }
 
@@ -217,6 +168,10 @@ fn handle_setoption(cmd: &str, context: &mut Context) -> Option<String> {
             "backgammon" => None,
             _ => Some("error unsupported_feature variant".to_string()),
         },
+        "Ply" => match value.trim().parse::<usize>() {
+            Ok(1) => None,
+            _ => Some("error unsupported_feature ply".to_string()),
+        },
         _ => Some("error unsupported_feature setoption".to_string()),
     }
 }
@@ -260,6 +215,32 @@ fn validate_go(cmd: &str) -> Option<String> {
         return Some("error bad_argument role".to_string());
     }
     Some("error bad_argument go".to_string())
+}
+
+fn handle_go(
+    cmd: &str,
+    context: &Context,
+    evaluator: &CompositeEvaluator,
+) -> Result<(String, String), String> {
+    if let Some(err) = validate_go(cmd) {
+        return Err(err);
+    }
+
+    let position = context
+        .position
+        .ok_or_else(|| "error missing_context position".to_string())?;
+    let dice = context
+        .dice
+        .ok_or_else(|| "error missing_context dice".to_string())?;
+
+    let best_position = evaluator.best_position(&position, &dice, context.score_config.value());
+    let best_move = BgMove::new(&position, &best_position.sides_switched(), &dice);
+    let best_move_text = format_move(best_move);
+
+    Ok((
+        format!("info role chequer pv {}", best_move_text),
+        format!("bestmove {best_move_text}"),
+    ))
 }
 
 fn format_move(bg_move: BgMove) -> String {
