@@ -16,7 +16,7 @@ fn main() {
         Err(err) => {
             reply(
                 &mut stdout,
-                &format!("error missing_context evaluator_init_failed {err}"),
+                &format!("error bad_state evaluator.init {err}"),
             );
             return;
         }
@@ -26,7 +26,7 @@ fn main() {
         Err(err) => {
             reply(
                 &mut stdout,
-                &format!("error missing_context evaluator_init_failed {err}"),
+                &format!("error bad_state evaluator.init {err}"),
             );
             return;
         }
@@ -47,31 +47,47 @@ fn main() {
             "ubgi" => {
                 reply(&mut stdout, "id name wildbg-ubgi 0.1");
                 reply(&mut stdout, "id author wildbg contributors");
-                reply(
-                    &mut stdout,
-                    "option name Threads type spin default 1 min 1 max 256",
-                );
-                reply(
-                    &mut stdout,
-                    "option name Seed type spin default 0 min 0 max 4294967295",
-                );
-                reply(
-                    &mut stdout,
-                    "option name Deterministic type check default true",
-                );
-                reply(
-                    &mut stdout,
-                    "option name EvalMode type combo default cubeless var cubeless var cubeful",
-                );
-                reply(
-                    &mut stdout,
-                    "option name Variant type combo default backgammon var backgammon",
-                );
-                reply(
-                    &mut stdout,
-                    "option name Ply type spin default 1 min 1 max 2",
-                );
+                reply(&mut stdout, "proto 0.2");
+                reply(&mut stdout, "key game.variant enum backgammon backgammon");
+                reply(&mut stdout, "key engine.ply int 1..2 1");
                 reply(&mut stdout, "ubgiok");
+            }
+            "keys" => {
+                reply(&mut stdout, "key game.variant enum backgammon backgammon");
+                reply(&mut stdout, "key engine.ply int 1..2 1");
+            }
+            _ if cmd.starts_with("get ") => {
+                let key = cmd.strip_prefix("get ").unwrap_or("").trim();
+                match key {
+                    "game.variant" => reply(&mut stdout, "value game.variant backgammon"),
+                    "engine.ply" => reply(&mut stdout, "value engine.ply 1"),
+                    _ => reply(&mut stdout, "error unsupported key"),
+                }
+            }
+            _ if cmd.starts_with("set ") => {
+                let rest = cmd.strip_prefix("set ").unwrap_or("");
+                let mut it = rest.splitn(2, ' ');
+                let key = it.next().unwrap_or("").trim();
+                let value = it.next().unwrap_or("").trim();
+                if key.is_empty() || value.is_empty() {
+                    reply(&mut stdout, "error bad_command set");
+                    continue;
+                }
+                match key {
+                    "game.variant" => {
+                        if value == "backgammon" {
+                            context.position = None;
+                            context.dice = None;
+                        } else {
+                            reply(&mut stdout, "error bad_value game.variant");
+                        }
+                    }
+                    "engine.ply" => match value.parse::<usize>() {
+                        Ok(1 | 2) => {}
+                        _ => reply(&mut stdout, "error bad_value engine.ply"),
+                    },
+                    _ => reply(&mut stdout, "error unsupported key"),
+                }
             }
             "isready" => reply(&mut stdout, "readyok"),
             "newgame" => {
@@ -80,13 +96,8 @@ fn main() {
             }
             "setturn p0" | "setturn p1" | "stop" => {}
             "quit" => break,
-            _ if cmd.starts_with("setoption ") => {
-                if let Some(err) = handle_setoption(cmd, &mut context) {
-                    reply(&mut stdout, &err);
-                }
-            }
             _ if cmd == "position xgid" || cmd.starts_with("position xgid ") => {
-                reply(&mut stdout, "error unsupported_feature position_xgid");
+                reply(&mut stdout, "error unsupported position.xgid");
             }
             _ if cmd.starts_with("newsession ")
                 || cmd.starts_with("setscore ")
@@ -104,15 +115,15 @@ fn main() {
                 if let Some(id) = cmd.strip_prefix("position gnubgid ") {
                     match parse_position_id(id.trim()) {
                         Some(position) => context.position = Some(position),
-                        None => reply(&mut stdout, "error bad_argument invalid_position"),
+                        None => reply(&mut stdout, "error bad_value position"),
                     }
                 } else if let Some(rest) = cmd.strip_prefix("dice ") {
                     match parse_dice(rest) {
                         Some(dice) => context.dice = Some(dice),
-                        None => reply(&mut stdout, "error bad_argument dice"),
+                        None => reply(&mut stdout, "error bad_value dice"),
                     }
                 } else {
-                    reply(&mut stdout, "error unknown_command");
+                    reply(&mut stdout, "error bad_command unknown");
                 }
             }
         }
@@ -123,9 +134,6 @@ struct Context {
     position: Option<Position>,
     dice: Option<Dice>,
     score_config: ScoreConfig,
-    deterministic: bool,
-    threads: usize,
-    seed: u64,
     ply: usize,
 }
 
@@ -135,70 +143,8 @@ impl Default for Context {
             position: None,
             dice: None,
             score_config: ScoreConfig::MoneyGame,
-            deterministic: true,
-            threads: 1,
-            seed: 0,
             ply: 1,
         }
-    }
-}
-
-fn handle_setoption(cmd: &str, context: &mut Context) -> Option<String> {
-    let rest = cmd.strip_prefix("setoption name ")?;
-    let Some((name, value)) = rest.split_once(" value ") else {
-        return Some("error bad_argument setoption".to_string());
-    };
-
-    match name.trim() {
-        "Threads" => match value.trim().parse::<usize>() {
-            Ok(threads) if threads > 0 => {
-                context.threads = threads;
-                None
-            }
-            _ => Some("error bad_argument threads".to_string()),
-        },
-        "Seed" => match value.trim().parse::<u64>() {
-            Ok(seed) => {
-                context.seed = seed;
-                None
-            }
-            _ => Some("error bad_argument seed".to_string()),
-        },
-        "Deterministic" => match parse_bool(value.trim()) {
-            Some(deterministic) => {
-                context.deterministic = deterministic;
-                None
-            }
-            None => Some("error bad_argument deterministic".to_string()),
-        },
-        "EvalMode" => match value.trim() {
-            "cubeless" => {
-                context.score_config = ScoreConfig::MoneyGame;
-                None
-            }
-            "cubeful" => Some("error unsupported_feature evalmode_cubeful".to_string()),
-            _ => Some("error bad_argument evalmode".to_string()),
-        },
-        "Variant" => match value.trim() {
-            "backgammon" => None,
-            _ => Some("error unsupported_feature variant".to_string()),
-        },
-        "Ply" => match value.trim().parse::<usize>() {
-            Ok(ply) if (1..=2).contains(&ply) => {
-                context.ply = ply;
-                None
-            }
-            _ => Some("error bad_argument ply".to_string()),
-        },
-        _ => Some("error unsupported_feature setoption".to_string()),
-    }
-}
-
-fn parse_bool(value: &str) -> Option<bool> {
-    match value {
-        "true" | "on" | "1" => Some(true),
-        "false" | "off" | "0" => Some(false),
-        _ => None,
     }
 }
 
@@ -220,19 +166,19 @@ fn parse_dice(rest: &str) -> Option<Dice> {
 }
 
 fn validate_go(cmd: &str) -> Option<String> {
-    if cmd == "go" || cmd == "go role chequer" || cmd.starts_with("go role chequer ") {
+    if cmd == "go" || cmd == "go chequer" || cmd.starts_with("go chequer ") {
         return None;
     }
     if cmd.contains("role cube") {
-        return Some("error unsupported_feature role_cube".to_string());
+        return Some("error unsupported role.cube".to_string());
     }
     if cmd.contains("role turn") {
-        return Some("error unsupported_feature role_turn".to_string());
+        return Some("error unsupported role.turn".to_string());
     }
     if cmd.starts_with("go role ") {
-        return Some("error bad_argument role".to_string());
+        return Some("error bad_command role".to_string());
     }
-    Some("error bad_argument go".to_string())
+    Some("error bad_command go".to_string())
 }
 
 fn handle_go(
@@ -247,10 +193,10 @@ fn handle_go(
 
     let position = context
         .position
-        .ok_or_else(|| "error missing_context position".to_string())?;
+        .ok_or_else(|| "error bad_state missing.position".to_string())?;
     let dice = context
         .dice
-        .ok_or_else(|| "error missing_context dice".to_string())?;
+        .ok_or_else(|| "error bad_state missing.dice".to_string())?;
 
     let best_position = if context.ply <= 1 {
         evaluator.best_position(&position, &dice, context.score_config.value())
